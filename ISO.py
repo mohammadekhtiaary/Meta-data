@@ -55,13 +55,51 @@ def get_rule_based_metadata(df):
         "attributes": {col: str(df[col].dtype) for col in df.columns}
     }
 
-
 def get_statistical_metadata(df):
-    return {"method": "Statistical Profiling", "total_features": len(df)}
+    """Method 2: Computes summary statistics."""
+    stats = {}
+    for col in df.columns:
+        stats[col] = {
+            "dtype": str(df[col].dtype),
+            "missing_values": int(df[col].isnull().sum()),
+            "unique_count": int(df[col].nunique()),
+        }
+        if pd.api.types.is_numeric_dtype(df[col]):
+            stats[col].update({
+                "min": float(df[col].min()),
+                "max": float(df[col].max())
+            })
+    return {
+        "method": "Statistical Profiling",
+        "spatial_reference": infer_crs(df),
+        "attribute_stats": stats
+    }
 
+# def get_statistical_metadata(df):
+#     return {"method": "Statistical Profiling", "total_features": len(df)}
 
 def get_heuristic_metadata(df):
-    return {"method": "Heuristic-Based", "total_features": len(df)}
+    """Method 3: Pattern-based rules to classify attribute roles."""
+    heuristics = {}
+    for col in df.columns:
+        unique_pct = df[col].nunique() / len(df)
+        dtype = df[col].dtype
+
+        if pd.api.types.is_integer_dtype(dtype) and unique_pct > 0.9:
+            classification = "Identifier (Primary Key candidate)"
+        elif df[col].nunique() < 10:
+            classification = "Categorical"
+        else:
+            classification = "General Attribute"
+        heuristics[col] = classification
+
+    return {
+        "method": "Heuristic-Based",
+        "spatial_reference": infer_crs(df),
+        "classifications": heuristics
+    }
+# def get_heuristic_metadata(df):
+#     return {"method": "Heuristic-Based", "total_features": len(df)}
 
 
 # --- 4. EVALUATION ENGINE (Veregin's Matrix with Fuzzy Matching) ---
