@@ -1,274 +1,100 @@
 import streamlit as st
 import pandas as pd
 import json
-import re
-
-# =========================================================
-# 1. PAGE CONFIG
-# =========================================================
-st.set_page_config(page_title="ISO 19115 Metadata Evaluation (MID/MIF)", layout="wide")
-st.title("🛰️ ISO 19115 Metadata Evaluation using MID/MIF Proxy Ground Truth")
-
-# =========================================================
-# 2. SIDEBAR
-# =========================================================
-st.sidebar.header("Inference Method")
-inference_method = st.sidebar.selectbox(
-    "Select Metadata Inference Method",
-    ["Rule-Based (Schema)", "Statistical Profiling", "Heuristic-Based"]
-)
-
-st.sidebar.header("Reference Files (MID/MIF)")
-mif_file = st.sidebar.file_uploader("Upload .MIF file", type=["mif"])
-mid_file = st.sidebar.file_uploader("Upload .MID file", type=["mid"])
-
-# =========================================================
-# 3. METADATA INFERENCE METHODS
-# =========================================================
-def get_rule_based_metadata(df):
-    return {
-        "method": "Rule-Based",
-        "geometry_info": {
-            "type": df["WKT_LNG_LAT"].str.extract(r'^([A-Z]+)', expand=False).dropna().unique().tolist()
-            if "WKT_LNG_LAT" in df.columns else None,
-            "dimensionality": "2D"
-        },
-        "attributes": {c: str(df[c].dtype) for c in df.columns},
-        "total_features": len(df)
-    }
 
 
-def get_statistical_metadata(df):
-    stats = {}
-    for col in df.columns:
-        stats[col] = {
-            "dtype": str(df[col].dtype),
-            "missing": int(df[col].isnull().sum()),
-            "unique": int(df[col].nunique())
-        }
-    return {
-        "method": "Statistical Profiling",
-        "attribute_stats": stats,
-        "total_features": len(df)
-    }
+# --- 1. EVALUATION ENGINE ---
+def calculate_veregin_score(inferred_val, reference_val, field_name):
+    """Calculates Veregin's Matrix (0-2 scale) for a metadata field."""
+    scores = {"Correctness": 0, "Completeness": 0, "Consistency": 0, "Granularity": 0}
 
+    # 1. Completeness
+    if inferred_val is not None and inferred_val != "Unknown" and inferred_val != []:
+        scores["Completeness"] = 2
 
-def get_heuristic_metadata(df):
-    roles = {}
-    for col in df.columns:
-        unique_ratio = df[col].nunique() / len(df)
-        if pd.api.types.is_integer_dtype(df[col]) and unique_ratio > 0.9:
-            roles[col] = "Identifier"
-        elif df[col].nunique() < 10:
-            roles[col] = "Categorical"
-        elif pd.api.types.is_float_dtype(df[col]):
-            roles[col] = "Continuous"
-        else:
-            roles[col] = "General"
-    return {
-        "method": "Heuristic-Based",
-        "classifications": roles,
-        "total_features": len(df)
-    }
+    # 2. Correctness (Match check)
+    if str(inferred_val).strip().lower() == str(reference_val).strip().lower():
+        scores["Correctness"] = 2
+    elif str(inferred_val).lower() in str(reference_val).lower():
+        scores["Correctness"] = 1
 
-# =========================================================
-# 4. MID / MIF PARSING (REFERENCE METADATA)
-# =========================================================
-def parse_mif(mif_text):
-    geometry_type = None
-    bounds = None
+    # 3. Consistency (Logic check)
+    # Example: Check if Bounding Box coordinates are mathematically logical
+    if field_name == "geographic_extent" and isinstance(inferred_val, dict):
+        if inferred_val.get("min_x", 0) < inferred_val.get("max_x", 0):
+            scores["Consistency"] = 2
+    else:
+        scores["Consistency"] = 2
 
-    for line in mif_text.splitlines():
-        line = line.strip()
+    # 4. Granularity (Detail check)
+    # Example: Check if geometry is specific (MultiPolygon) or generic (Vector)
+    if field_name == "geometry_type" and any(x in str(inferred_val).upper() for x in ['MULTI', 'POINT', 'LINE']):
+        scores["Granularity"] = 2
+    else:
+        scores["Granularity"] = 1
 
-        if line.startswith(("Point", "Line", "Pline", "Region")):
-            geometry_type = line.split()[0]
-
-        if line.startswith("Bounds"):
-            nums = re.findall(r"[-+]?\d*\.\d+|\d+", line)
-            if len(nums) == 4:
-                bounds = {
-                    "min_x": float(nums[0]),
-                    "min_y": float(nums[1]),
-                    "max_x": float(nums[2]),
-                    "max_y": float(nums[3])
-                }
-
-    return {
-        "geometry_type": geometry_type,
-        "bounding_box": bounds,
-        "dimensionality": "2D"
-    }
-
-
-def parse_mid(mid_text):
-    rows = mid_text.splitlines()
-    rows = [r for r in rows if r.strip() != ""]
-    return {
-        "total_features": len(rows)
-    }
-
-# =========================================================
-# 5. VEREGIN SCORING FUNCTIONS
-# =========================================================
-def score_correctness(inferred, reference):
-    if inferred is None:
-        return 0
-    if inferred == reference:
-        return 2
-    if isinstance(inferred, list) and reference in inferred:
-        return 2
-    return 1
-
-
-def score_completeness(inferred):
-    return 2 if inferred not in [None, "", [], {}] else 0
-
-
-def score_consistency(inferred, related=None):
-    if inferred is None:
-        return 0
-    if related is None:
-        return 2
-    return 2 if inferred != related else 1
-
-
-def score_granularity(inferred, reference):
-    if inferred is None:
-        return 0
-    if inferred == reference:
-        return 2
-    return 1
-
-
-def evaluate_field(inferred, reference, related=None):
-    scores = {
-        "correctness": score_correctness(inferred, reference),
-        "completeness": score_completeness(inferred),
-        "consistency": score_consistency(inferred, related),
-        "granularity": score_granularity(inferred, reference)
-    }
-    scores["total"] = sum(scores.values())
+    scores["Total"] = sum(scores.values())
     return scores
 
-# =========================================================
-# 6. ISO 19115-INSPIRED EVALUATION
-# =========================================================
-def evaluate_metadata_iso(inferred, reference):
-    results = {}
 
-    results["geometry_type"] = evaluate_field(
-        inferred.get("geometry_info", {}).get("type"),
-        reference.get("geometry_type"),
-        related=inferred.get("geometry_info", {}).get("dimensionality")
-    )
+# --- 2. SIDEBAR: REFERENCE FILE UPLOAD ---
+st.sidebar.markdown("---")
+st.sidebar.header("Evaluation Reference")
+ref_file = st.sidebar.file_uploader("Upload Reference Metadata (JSON/MID)", type=['json', 'mid'])
 
-    results["bounding_box"] = evaluate_field(
-        inferred.get("geographic_extent"),
-        reference.get("bounding_box")
-    )
+# --- 3. MAIN LOGIC (Within your existing file processing loop) ---
+# Assuming 'metadata' is the dictionary generated by your inference methods...
 
-    results["attribute_count"] = evaluate_field(
-        len(inferred.get("attributes", {})) if "attributes" in inferred else None,
-        reference.get("attribute_count")
-    )
+if uploaded_file is not None:
+    # ... (Your existing code for previewing data and generating 'metadata') ...
 
-    results["total_features"] = evaluate_field(
-        inferred.get("total_features"),
-        reference.get("total_features")
-    )
+    if ref_file is not None:
+        try:
+            # Load the reference data
+            reference_data = json.load(ref_file)
 
-    return results
+            st.divider()
+            st.header("⚖️ Veregin’s Matrix Evaluation")
+            st.info("Comparing Inferred Metadata against Reference Standard")
 
+            # Define which fields to compare
+            # Note: Ensure your reference JSON keys match these field names
+            comparison_map = {
+                "geometry_type": (metadata.get("geometry_info", {}).get("type"), reference_data.get("geometry_type")),
+                "total_features": (metadata.get("total_features"), reference_data.get("total_features")),
+                "geographic_extent": (metadata.get("geographic_extent"), reference_data.get("geographic_extent"))
+            }
 
-def aggregate_scores(field_scores):
-    total = sum(v["total"] for v in field_scores.values())
-    max_score = len(field_scores) * 8
-    return {
-        "total_score": total,
-        "max_score": max_score,
-        "normalized_score": round(total / max_score, 3)
-    }
+            eval_report = []
+            for field, values in comparison_map.items():
+                inferred, reference = values
+                field_scores = calculate_veregin_score(inferred, reference, field)
+                field_scores["Field"] = field
+                eval_report.append(field_scores)
 
-# =========================================================
-# 7. MAIN INTERFACE
-# =========================================================
-csv_file = st.file_uploader("Upload Dataset (CSV)", type=["csv"])
+            # --- 4. DISPLAY EVALUATION RESULTS ---
+            eval_df = pd.DataFrame(eval_report).set_index("Field")
 
-if csv_file and mif_file and mid_file:
-    df = pd.read_csv(csv_file, sep=";")
+            # Highlight scores in a table
+            st.dataframe(eval_df.style.background_gradient(cmap="RdYlGn", subset=["Total"], low=0, high=8))
 
-    st.subheader("Dataset Preview")
-    st.dataframe(df.head())
+            # Method-level aggregation
+            total_score = eval_df["Total"].sum()
+            max_possible = len(eval_report) * 8
+            performance_ratio = (total_score / max_possible) * 100
 
-    # -----------------------
-    # Inferred metadata
-    # -----------------------
-    if inference_method == "Rule-Based (Schema)":
-        metadata = get_rule_based_metadata(df)
-    elif inference_method == "Statistical Profiling":
-        metadata = get_statistical_metadata(df)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Overall Score", f"{total_score} / {max_possible}")
+            c2.metric("Accuracy Rate", f"{performance_ratio:.1f}%")
+
+            # Qualitative Error Analysis
+            with st.expander("🔍 Detailed Error Analysis"):
+                for index, row in eval_df.iterrows():
+                    if row["Total"] < 6:
+                        st.write(
+                            f"**{index}:** Low score detected. Check if the inference method is too coarse for this dataset.")
+
+        except Exception as e:
+            st.error(f"Error reading reference file: {e}")
     else:
-        metadata = get_heuristic_metadata(df)
-
-    metadata["geographic_extent"] = {
-        "min_x": float(df["LNG"].min()) if "LNG" in df.columns else None,
-        "max_x": float(df["LNG"].max()) if "LNG" in df.columns else None,
-        "min_y": float(df["LAT"].min()) if "LAT" in df.columns else None,
-        "max_y": float(df["LAT"].max()) if "LAT" in df.columns else None
-    }
-
-    # -----------------------
-    # Reference metadata
-    # -----------------------
-    mif_text = mif_file.read().decode("utf-8", errors="ignore")
-    mid_text = mid_file.read().decode("utf-8", errors="ignore")
-
-    ref_mif = parse_mif(mif_text)
-    ref_mid = parse_mid(mid_text)
-
-    reference_metadata = {
-        "geometry_type": ref_mif["geometry_type"],
-        "bounding_box": ref_mif["bounding_box"],
-        "total_features": ref_mid["total_features"],
-        "attribute_count": len(df.columns)
-    }
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("Inferred Metadata")
-        st.json(metadata)
-
-    with col2:
-        st.subheader("Reference Metadata (MID/MIF)")
-        st.json(reference_metadata)
-
-    # -----------------------
-    # Evaluation
-    # -----------------------
-    field_scores = evaluate_metadata_iso(metadata, reference_metadata)
-    method_score = aggregate_scores(field_scores)
-
-    st.subheader("ISO 19115 Evaluation (Veregin Matrix)")
-    st.json(field_scores)
-
-    st.metric(
-        "Overall Method Performance",
-        method_score["normalized_score"]
-    )
-
-    st.write(f"Raw Score: {method_score['total_score']} / {method_score['max_score']}")
-
-    # -----------------------
-    # Download results
-    # -----------------------
-    st.download_button(
-        "Download Evaluation Results",
-        json.dumps(
-            {"fields": field_scores, "method": method_score},
-            indent=2
-        ),
-        file_name="iso19115_mid_mif_evaluation.json",
-        mime="application/json"
-    )
+        st.warning("Please upload a reference JSON/MID file in the sidebar to perform ISO evaluation.")
