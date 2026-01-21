@@ -202,26 +202,83 @@ if uploaded_file is not None:
         st.info(f"**Detected CRS:** {crs_info.get('name', 'Unknown')}")
 
     # git Evaluation
+    # if ref_file is not None:
+    #     try:
+    #         ref_data = parse_mif_reference(ref_file.read())
+    #         st.divider()
+    #         st.header(" Evaluation")
+    #
+    #         comp_map = {
+    #             "geometry_type": (metadata.get("geometry_type"), ref_data.get("geometry_type")),
+    #             "total_features": (metadata.get("total_features"), ref_data.get("total_features")),
+    #         }
+    #
+    #         eval_results = []
+    #         for field, vals in comp_map.items():
+    #             inf, ref = vals
+    #             f_scores = calculate_veregin_score(inf, ref, field)
+    #             f_scores.update({"Field": field, "Inferred": str(inf), "Reference": str(ref)})
+    #             eval_results.append(f_scores)
+    #
+    #         st.table(pd.DataFrame(eval_results).set_index("Field"))
+    #     except Exception as e:
+    #         st.error(f"Evaluation Error: {e}")
+    #
+    # st.download_button("Download JSON Metadata", json.dumps(metadata, indent=4), "metadata.json")
+
+    # --- 7. EVALUATION LOGIC ---
     if ref_file is not None:
         try:
-            ref_data = parse_mif_reference(ref_file.read())
-            st.divider()
-            st.header(" Evaluation")
+            # Parse MIF Reference
+            reference_data = parse_mif_reference(ref_file.read())
 
-            comp_map = {
-                "geometry_type": (metadata.get("geometry_type"), ref_data.get("geometry_type")),
-                "total_features": (metadata.get("total_features"), ref_data.get("total_features")),
+            st.divider()
+            st.header("⚖️ ISO Standard Evaluation (Veregin’s Matrix)")
+            st.info("The evaluator uses Case-Insensitive normalization to match model output with the MIF standard.")
+
+            # Map the fields we want to compare
+            comparison_map = {
+                "geometry_type": (metadata.get("geometry_type"), reference_data.get("geometry_type")),
+                "total_features": (metadata.get("total_features"), reference_data.get("total_features")),
             }
 
-            eval_results = []
-            for field, vals in comp_map.items():
-                inf, ref = vals
+            eval_report = []
+            for field, values in comparison_map.items():
+                inf, ref = values
+                # calculate_veregin_score is the helper function from previous steps
                 f_scores = calculate_veregin_score(inf, ref, field)
-                f_scores.update({"Field": field, "Inferred": str(inf), "Reference": str(ref)})
-                eval_results.append(f_scores)
+                f_scores.update({
+                    "Field": field,
+                    "Inferred": str(inf),
+                    "Reference (MIF)": str(ref)
+                })
+                eval_report.append(f_scores)
 
-            st.table(pd.DataFrame(eval_results).set_index("Field"))
+            # Display Evaluation Table
+            eval_df = pd.DataFrame(eval_report).set_index("Field")
+            st.table(eval_df)
+
+            # --- YOUR NEW SUMMARY PERFORMANCE SECTION ---
+            total_points = eval_df["Total"].sum()
+            max_points = len(eval_report) * 8  # 4 criteria * max score of 2 = 8 per row
+            score_percentage = (total_points / max_points) * 100
+
+            st.success(
+                f"**Overall Method Performance Score:** {total_points}/{max_points} ({score_percentage:.1f}%)"
+            )
+
         except Exception as e:
-            st.error(f"Evaluation Error: {e}")
+            st.error(f"Error reading MIF: {e}")
+    else:
+        st.warning("⚠️ Upload a .mif file in the sidebar to perform the automated ISO evaluation.")
 
-    st.download_button("Download JSON Metadata", json.dumps(metadata, indent=4), "metadata.json")
+    # --- 8. FINAL DOWNLOAD ---
+    st.divider()
+    st.subheader("Export Results")
+    json_string = json.dumps(metadata, indent=4)
+    st.download_button(
+        label="Download JSON Metadata",
+        data=json_string,
+        file_name=f"metadata_{inference_method.lower().replace(' ', '_')}.json",
+        mime="application/json"
+    )
