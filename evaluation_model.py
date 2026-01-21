@@ -5,16 +5,16 @@ import re
 
 # --- 1. SET UP THE PAGE ---
 st.set_page_config(page_title="GeoMeta Portal & Evaluator", layout="wide")
-st.title("🛰️ Geospatial Metadata Generator & Evaluator")
+st.title("🛰️ Geospatial Metadata Generator & ISO Evaluator")
 
 
-# --- 2. HELPER FUNCTIONS ---
+# --- 2. HELPER FUNCTIONS (Must be defined first) ---
 
 def infer_crs(df):
     """Detects if the coordinates likely belong to WGS84 (EPSG:4326)."""
     if 'LAT' in df.columns and 'LNG' in df.columns:
-        # Check if values fall within standard geographic bounds
         try:
+            # Check if values fall within standard geographic bounds
             lat_check = df['LAT'].between(-90, 90).all()
             lng_check = df['LNG'].between(-180, 180).all()
 
@@ -39,7 +39,7 @@ def parse_mif_reference(file_content):
 
     ref = {"geometry_type": "Unknown", "total_features": 0}
 
-    # Heuristic: Check for MIF geometry declarations
+    # MIF geometry declarations: Point, Line, Pline, Region
     if "Region" in content:
         ref["geometry_type"] = "POLYGON"
     elif "Line" in content or "Pline" in content:
@@ -52,7 +52,7 @@ def parse_mif_reference(file_content):
     return ref
 
 
-# --- 3. INFERENCE LOGIC FUNCTIONS ---
+# --- 3. UPDATED INFERENCE LOGIC ---
 
 def get_rule_based_metadata(df):
     """Method 1: Extracts metadata directly from file structure and schema."""
@@ -86,7 +86,7 @@ def get_statistical_metadata(df):
 
     return {
         "method": "Statistical Profiling",
-        "geometry_type": "POINT" if ('LAT' in df.columns and 'LNG' in df.columns) else "Unknown",
+        "geometry_type": "POINT" if ('LAT' in df.columns) else "Unknown",
         "spatial_reference": infer_crs(df),
         "attribute_stats": stats
     }
@@ -109,25 +109,25 @@ def get_heuristic_metadata(df):
 
     return {
         "method": "Heuristic-Based",
-        "geometry_type": "POINT" if ('LAT' in df.columns and 'LNG' in df.columns) else "Unknown",
+        "geometry_type": "POINT" if ('LAT' in df.columns) else "Unknown",
         "spatial_reference": infer_crs(df),
         "classifications": heuristics
     }
 
 
-# --- 4. EVALUATION ENGINE (Veregin's Matrix) ---
+# --- 4. EVALUATION ENGINE ---
 
 def calculate_veregin_score(inferred_val, reference_val, field_name):
-    """Scores a field based on Veregin's criteria (0-2) with normalization."""
+    """Scores based on Veregin's criteria (0-2)."""
     scores = {"Correctness": 0, "Completeness": 0, "Consistency": 0, "Granularity": 0}
 
     # 1. Completeness
-    if inferred_val is not None and str(inferred_val) not in ["Unknown", "[]", "None", ""]:
+    if inferred_val and str(inferred_val) not in ["Unknown", "[]", "None"]:
         scores["Completeness"] = 2
     else:
         return scores
 
-    # 2. Correctness (Normalization Fix)
+    # 2. Correctness (Normalization)
     def normalize(v):
         if isinstance(v, list): v = v[0] if len(v) > 0 else ""
         return str(v).strip().upper().replace("MULTIPOLYGON", "POLYGON")
@@ -140,20 +140,14 @@ def calculate_veregin_score(inferred_val, reference_val, field_name):
     elif inf_norm in ref_norm or ref_norm in inf_norm:
         scores["Correctness"] = 1
 
-    # 3. Consistency (Internal Logic)
     scores["Consistency"] = 2
-
-    # 4. Granularity (Detail Level)
-    if any(x in inf_norm for x in ['POINT', 'LINE', 'POLYGON']):
-        scores["Granularity"] = 2
-    else:
-        scores["Granularity"] = 1
-
+    scores["Granularity"] = 2 if any(x in inf_norm for x in ['POINT', 'LINE', 'POLYGON']) else 1
     scores["Total"] = sum(scores.values())
     return scores
 
 
-# --- 5. SIDEBAR ---
+# --- 5. APP INTERFACE ---
+
 st.sidebar.header("Settings")
 inference_method = st.sidebar.selectbox(
     "Select Inference Method",
@@ -164,24 +158,22 @@ st.sidebar.divider()
 st.sidebar.header("Evaluation Reference")
 ref_file = st.sidebar.file_uploader("Upload Reference MIF File", type=['mif'])
 
-# --- 6. MAIN INTERFACE ---
 uploaded_file = st.file_uploader("Choose a CSV dataset file", type=['csv'])
 
 if uploaded_file is not None:
-    # Attempt to read with semicolon, fallback to comma
     try:
         df = pd.read_csv(uploaded_file, sep=';')
         if len(df.columns) <= 1:
             uploaded_file.seek(0)
             df = pd.read_csv(uploaded_file, sep=',')
     except Exception as e:
-        st.error(f"Error loading file: {e}")
+        st.error(f"Error loading CSV: {e}")
         st.stop()
 
     st.subheader("Data Preview")
     st.dataframe(df.head(5))
 
-    # Execute selected method
+    # Trigger selected inference
     if inference_method == "Rule-Based (Schema)":
         metadata = get_rule_based_metadata(df)
     elif inference_method == "Statistical Profiling":
@@ -189,7 +181,7 @@ if uploaded_file is not None:
     else:
         metadata = get_heuristic_metadata(df)
 
-    # Global shared metadata
+    # Attach universal metadata
     metadata["total_features"] = len(df)
     metadata["geographic_extent"] = {
         "min_x": float(df['LNG'].min()) if 'LNG' in df.columns else None,
@@ -198,57 +190,38 @@ if uploaded_file is not None:
         "max_y": float(df['LAT'].max()) if 'LAT' in df.columns else None,
     }
 
-    # Display Results
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        st.subheader(f"Generated Metadata ({inference_method})")
+    # UI Layout
+    col_left, col_right = st.columns([2, 1])
+    with col_left:
+        st.subheader("Generated Metadata")
         st.json(metadata)
-    with c2:
+    with col_right:
         st.subheader("Quick Stats")
         st.metric("Total Features", len(df))
-        crs = metadata.get("spatial_reference", {})
-        st.info(f"**Detected CRS:** {crs.get('name', 'Unknown')}")
+        crs_info = metadata.get("spatial_reference", {})
+        st.info(f"**Detected CRS:** {crs_info.get('name', 'Unknown')}")
 
-    # --- 7. EVALUATION LOGIC ---
+    # ISO Evaluation
     if ref_file is not None:
         try:
-            reference_data = parse_mif_reference(ref_file.read())
+            ref_data = parse_mif_reference(ref_file.read())
             st.divider()
-            st.header("⚖️ Evaluation (Veregin’s Matrix)")
+            st.header("⚖️ ISO Standard Evaluation")
 
-            comparison_map = {
-                "geometry_type": (metadata.get("geometry_type"), reference_data.get("geometry_type")),
-                "total_features": (metadata.get("total_features"), reference_data.get("total_features")),
+            comp_map = {
+                "geometry_type": (metadata.get("geometry_type"), ref_data.get("geometry_type")),
+                "total_features": (metadata.get("total_features"), ref_data.get("total_features")),
             }
 
-            eval_report = []
-            for field, values in comparison_map.items():
-                inf, ref = values
+            eval_results = []
+            for field, vals in comp_map.items():
+                inf, ref = vals
                 f_scores = calculate_veregin_score(inf, ref, field)
-                f_scores.update({
-                    "Field": field,
-                    "Inferred": str(inf),
-                    "Reference (MIF)": str(ref)
-                })
-                eval_report.append(f_scores)
+                f_scores.update({"Field": field, "Inferred": str(inf), "Reference": str(ref)})
+                eval_results.append(f_scores)
 
-            eval_df = pd.DataFrame(eval_report).set_index("Field")
-            st.table(eval_df)
-
-            total_points = eval_df["Total"].sum()
-            max_points = len(eval_report) * 8
-            st.success(
-                f"**Overall Performance Score:** {total_points}/{max_points} ({(total_points / max_points) * 100:.1f}%)")
-
+            st.table(pd.DataFrame(eval_results).set_index("Field"))
         except Exception as e:
-            st.error(f"Error reading MIF: {e}")
-    else:
-        st.warning("⚠️ Upload a .mif file in the sidebar to perform evaluation.")
+            st.error(f"Evaluation Error: {e}")
 
-    # Download Button
-    st.download_button(
-        label="Download Metadata JSON",
-        data=json.dumps(metadata, indent=4),
-        file_name="metadata.json",
-        mime="application/json"
-    )
+    st.download_button("Download JSON Metadata", json.dumps(metadata, indent=4), "metadata.json")
