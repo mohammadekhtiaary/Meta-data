@@ -1,105 +1,67 @@
 import streamlit as st
 import pandas as pd
-import geopandas as gpd
-import os
-import tempfile
+import requests
+import zipfile
+import io
+import re
 
 
 # --- 1. VEREGIN SCORING ENGINE ---
 def score_veregin(inferred, reference):
     scores = {"Correctness": 0, "Completeness": 0, "Consistency": 0, "Granularity": 0}
-
-    # Correctness
     if str(inferred).lower() == str(reference).lower():
         scores["Correctness"] = 2
     elif str(inferred) in str(reference) or str(reference) in str(inferred):
         scores["Correctness"] = 1
-
-    # Completeness
-    if inferred is not None and str(inferred).strip().lower() not in ["unknown", ""]:
-        scores["Completeness"] = 2
-
-    # Consistency & Granularity (Logic based on your class requirements)
-    scores["Consistency"] = 2 if (isinstance(inferred, (int, float)) or len(str(inferred)) > 0) else 0
+    scores["Completeness"] = 2 if (inferred and str(inferred).lower() != "unknown") else 0
+    scores["Consistency"] = 2 if len(str(inferred)) > 0 else 0
     scores["Granularity"] = 2 if str(inferred).upper() == str(reference).upper() else 1
-
     scores["Total"] = sum(scores.values())
     return scores
 
 
-# --- 2. MAPINFO LOADER ---
-def load_mapinfo_reference(mif_file, mid_file):
-    """
-    Saves uploaded MIF/MID to a temp directory so GeoPandas/GDAL can read them.
-    """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # MIF and MID must have the same base name in the same folder
-        base_name = "reference"
-        mif_path = os.path.join(tmpdir, f"{base_name}.mif")
-        mid_path = os.path.join(tmpdir, f"{base_name}.mid")
+# --- 2. TEXT-BASED MIF PARSER (No GeoPandas needed!) ---
+def parse_mif_header(mif_text):
+    """Parses a .mif file as text to extract metadata."""
+    meta = {}
+    # Look for Geometry Type (usually near 'Data' section or by looking at objects)
+    if "Point" in mif_text:
+        meta["geometry_type"] = "POINT"
+    elif "Region" in mif_text:
+        meta["geometry_type"] = "POLYGON"
+    elif "Line" in mif_text:
+        meta["geometry_type"] = "LINESTRING"
 
-        with open(mif_path, "wb") as f:
-            f.write(mif_file.getbuffer())
-        with open(mid_path, "wb") as f:
-            f.write(mid_file.getbuffer())
+    # Look for Column Count
+    col_match = re.search(r"Columns\s+(\d+)", mif_text, re.IGNORECASE)
+    meta["attribute_count"] = int(col_match.group(1)) if col_match else "Unknown"
 
-        # Read using GeoPandas
-        gdf = gpd.read_file(mif_path)
-
-        # Extract Reference Metadata for Comparison
-        ref_meta = {
-            "geometry_type": str(gdf.geom_type.iloc[0]).upper(),
-            "attribute_count": len(gdf.columns) - 1,  # Exclude 'geometry' column
-            "total_features": len(gdf),
-            "coord_system": str(gdf.crs) if gdf.crs else "Unknown"
-        }
-        return ref_meta
+    return meta
 
 
-# --- 3. UI & EVALUATION ---
-st.title("🛰️ MapInfo MIF/MID Evaluator")
+# --- 3. UI & DOWNLOAD LOGIC ---
+st.title("🛰️ Automated URL Metadata Evaluator")
 
-st.sidebar.header("Upload Files")
-data_csv = st.sidebar.file_uploader("Upload Target Dataset (CSV)", type=['csv'])
+# Example URL from Amsterdam Data Portal (typically they provide ZIPs)
+url = st.text_input("Paste Amsterdam Data Portal ZIP Link:",
+                    "https://maps.amsterdam.nl/open_geodata/geojson.php?KAARTLAAG=PARKEREN_GEMEENTE&GEMEENTE=Amsterdam")
 
-st.sidebar.subheader("Reference Files (MapInfo)")
-ref_mif = st.sidebar.file_uploader("Upload Reference .mif", type=['mif'])
-ref_mid = st.sidebar.file_uploader("Upload Reference .mid", type=['mid'])
+if st.button("Download and Evaluate"):
+    try:
+        response = requests.get(url)
+        z = zipfile.ZipFile(io.BytesIO(response.content))
 
-if data_csv and ref_mif and ref_mid:
-    # 1. Process Reference
-    ground_truth = load_mapinfo_reference(ref_mif, ref_mid)
+        # Find the .mif file in the zip
+        mif_filename = [f for f in z.namelist() if f.endswith('.mif')][0]
+        with z.open(mif_filename) as f:
+            mif_content = f.read().decode('utf-8')
+            ground_truth = parse_mif_header(mif_content)
 
-    # 2. Process Target CSV
-    df = pd.read_csv(data_csv, sep=None, engine='python')
+        st.success(f"Reference data extracted from {mif_filename}")
+        st.write("**Reference Metadata Found:**", ground_truth)
 
-    # 3. Define Inference Methods
-    methods = {
-        "Rule-Based": {
-            "geometry_type": "POINT" if "WKT" in df.columns else "Unknown",
-            "attribute_count": len(df.columns)
-        },
-        "Statistical": {
-            "geometry_type": "POINT" if any(c in df.columns for c in ['LAT', 'LON']) else "Unknown",
-            "attribute_count": df.shape[1]
-        }
-    }
+        # Now you can compare this 'ground_truth' to your automated metadata!
+        # (Insert your run_rule_based() and scoring loop here)
 
-    # 4. Evaluation Loop
-    results = []
-    for m_name, m_data in methods.items():
-        for field in ["geometry_type", "attribute_count"]:
-            inf = m_data.get(field)
-            ref = ground_truth.get(field)
-
-            v_score = score_veregin(inf, ref)
-            v_score.update({"Method": m_name, "Field": field, "Inferred": inf, "Reference": ref})
-            results.append(v_score)
-
-    # 5. Display
-    eval_df = pd.DataFrame(results)
-    st.write("### Veregin Matrix Scoring", eval_df)
-
-    # Method Performance summary
-    summary = eval_df.groupby("Method")["Total"].sum().reset_index()
-    st.bar_chart(summary.set_index("Method"))
+    except Exception as e:
+        st.error(f"Could not process URL. Make sure it is a direct link to a ZIP file. Error: {e}")
