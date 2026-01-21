@@ -5,7 +5,7 @@ import re
 
 # --- 1. SET UP THE PAGE ---
 st.set_page_config(page_title="GeoMeta Portal & Evaluator", layout="wide")
-st.title("🛰️ Geospatial Metadata Generator & ISO Evaluator")
+st.title("Geospatial Metadata Generator & Evaluator")
 
 
 # --- 2. HELPER FUNCTIONS (Must be defined before they are called) ---
@@ -199,7 +199,7 @@ if uploaded_file is not None:
         try:
             reference_data = parse_mif_reference(ref_file.read())
             st.divider()
-            st.header("⚖️ ISO Standard Evaluation (Veregin’s Matrix)")
+            st.header(" Standard Evaluation (Veregin’s Matrix)")
 
             comparison_map = {
                 "geometry_type": (metadata.get("geometry_type"), reference_data.get("geometry_type")),
@@ -232,7 +232,7 @@ if uploaded_file is not None:
         except Exception as e:
             st.error(f"Error reading MIF: {e}")
     else:
-        st.warning("⚠️ Upload a .mif file in the sidebar to perform the automated ISO evaluation.")
+        st.warning(" Upload a .mif file in the sidebar to perform the automated evaluation.")
 
     # --- 8. DOWNLOAD ---
     st.divider()
