@@ -5,7 +5,7 @@ import re
 
 # --- 1. SET UP THE PAGE ---
 st.set_page_config(page_title="GeoMeta Portal & Evaluator", layout="wide")
-st.title("🛰️ Geospatial Metadata Generator & ISO Evaluator")
+st.title("Geospatial Metadata Generator & Evaluator")
 
 
 # --- 2. HELPER FUNCTIONS (Must be defined first) ---
@@ -201,12 +201,12 @@ if uploaded_file is not None:
         crs_info = metadata.get("spatial_reference", {})
         st.info(f"**Detected CRS:** {crs_info.get('name', 'Unknown')}")
 
-    # ISO Evaluation
+    # git Evaluation
     if ref_file is not None:
         try:
             ref_data = parse_mif_reference(ref_file.read())
             st.divider()
-            st.header("⚖️ ISO Standard Evaluation")
+            st.header(" Evaluation")
 
             comp_map = {
                 "geometry_type": (metadata.get("geometry_type"), ref_data.get("geometry_type")),
