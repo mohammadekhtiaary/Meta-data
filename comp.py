@@ -1,104 +1,115 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import json
 
+# --- 1. METADATA INFERENCE ENGINE ---
+# These represent your 3 methods (Rule-Based, Statistical, Heuristic)
 
-# --- 1. CORE LOGIC CLASSES ---
-
-class MetadataEvaluator:
-    """Evaluates metadata based on ISO 19115 / Veregin Matrix principles."""
-
-    def __init__(self, generated, reference):
-        self.gen = generated
-        self.ref = reference
-
-    def calculate_score(self, gen_val, ref_val):
-        # Completeness: Is it there?
-        comp = 2 if gen_val is not None and gen_val != "Unknown" else 0
-        # Correctness: Does it match the Portal?
-        corr = 2 if gen_val == ref_val else 1 if str(gen_val) in str(ref_val) else 0
-        # Consistency: Logical internal structure
-        cons = 2 if comp > 0 else 0
-        # Granularity: Detail level (e.g. MultiPolygon vs Polygon)
-        gran = 2 if len(str(gen_val)) >= len(str(ref_val)) else 1
-
-        return comp + corr + cons + gran
-
-    def get_report(self):
-        fields = {
-            "Spatial Type": (self.gen.get("geometry_info", {}).get("type"), self.ref.get("geometry_type")),
-            "Feature Count": (self.gen.get("total_features"), self.ref.get("total_features")),
-            "Extent (X)": (self.gen.get("geographic_extent", {}).get("min_x"), self.ref.get("bbox_min_x"))
-        }
-        scores = {k: self.calculate_score(v[0], v[1]) for k, v in fields.items()}
-        scores["Final Score"] = sum(scores.values()) / len(fields)
-        return scores
+def infer_metadata(df, method):
+    meta = {}
+    if method == "Rule-Based":
+        meta['geom'] = "POINT" if "LNG" in df.columns else "UNKNOWN"
+        meta['count'] = len(df)
+        meta['bbox'] = df['LNG'].min() if 'LNG' in df.columns else 0
+    elif method == "Statistical":
+        # Simulate a slight error in statistical profiling for testing
+        meta['geom'] = "POINT"
+        meta['count'] = int(df.shape[0])
+        meta['bbox'] = round(df['LNG'].mean(), 2)
+    else:  # Heuristic
+        meta['geom'] = "VECTOR"
+        meta['count'] = len(df.index)
+        meta['bbox'] = df['LNG'].quantile(0.1)
+    return meta
 
 
-# --- 2. STREAMLIT UI ---
+# --- 2. EVALUATION LOGIC (Veregin's Matrix) ---
 
-st.set_page_config(page_title="Batch GeoMeta Evaluator", layout="wide")
-st.title("🛰️ Batch ISO 19115 Metadata Evaluator")
-st.markdown("Upload multiple CSVs from the Amsterdam Data Portal to evaluate inference methods.")
+def calculate_veregin_score(inferred, actual):
+    """
+    Scores each field: Correctness(2), Completeness(2), Consistency(2), Granularity(2)
+    Total max score = 8 per field.
+    """
+    # 1. Completeness (Is value present?)
+    comp = 2 if inferred is not None else 0
 
-# Sidebar Configuration
-st.sidebar.header("Evaluation Settings")
-inference_method = st.sidebar.selectbox("Inference Method", ["Rule-Based", "Statistical", "Heuristic"])
+    # 2. Correctness (Does it match ground truth?)
+    # We use a tolerance for numeric values (BBox)
+    if isinstance(inferred, (int, float)):
+        corr = 2 if abs(inferred - actual) < 0.01 else 1 if abs(inferred - actual) < 0.5 else 0
+    else:
+        corr = 2 if str(inferred) == str(actual) else 0
 
-# --- 3. BATCH UPLOADER ---
-uploaded_files = st.file_uploader("Choose CSV files", type=['csv'], accept_multiple_files=True)
+    # 3. Consistency (Logic check)
+    cons = 2 if comp == 2 and corr >= 1 else 0
+
+    # 4. Granularity (Detail level)
+    gran = 2 if len(str(inferred)) >= len(str(actual)) else 1
+
+    return comp + corr + cons + gran
+
+
+# --- 3. STREAMLIT UI ---
+
+st.set_page_config(page_title="ISO 19115 Evaluator Pro", layout="wide")
+st.title("🛰️ ISO 19115 Quality Metric Tool")
+
+st.sidebar.header("Evaluation Parameters")
+selected_method = st.sidebar.selectbox("Select Inference Method", ["Rule-Based", "Statistical", "Heuristic"])
+
+uploaded_files = st.file_uploader("Upload Multiple Amsterdam Data Portal CSVs", type=['csv'],
+                                  accept_multiple_files=True)
 
 if uploaded_files:
-    all_results = []
+    summary_data = []
 
-    for uploaded_file in uploaded_files:
-        # Load Data
-        df = pd.read_csv(uploaded_file, sep=';')
-        file_name = uploaded_file.name
+    for file in uploaded_files:
+        # Load the dataset
+        df = pd.read_csv(file, sep=';')
 
-        # --- GENERATION LOGIC (Simplified for Batch) ---
-        # Note: Replace this with your specific rule-based/stat/heuristic functions
-        metadata = {
-            "geometry_info": {"type": ["POINT"]},
-            "total_features": len(df),
-            "geographic_extent": {"min_x": df['LNG'].min() if 'LNG' in df.columns else None}
+        # A. DERIVE PROXY GROUND TRUTH (The "Real" values from the file)
+        # In ISO 19115, these are the 'True' descriptors
+        truth = {
+            'geom': "POINT",  # Assuming portal says POINT
+            'count': len(df),
+            'bbox': df['LNG'].min() if 'LNG' in df.columns else 0
         }
 
-        # --- PROXY GROUND TRUTH (Reference) ---
-        # Logic: In a real test, you'd match file_name to a known portal schema
-        reference_truth = {
-            "geometry_type": ["POINT"],
-            "total_features": len(df),
-            "bbox_min_x": 4.90
-        }
+        # B. RUN SELECTED INFERENCE METHOD
+        inferred = infer_metadata(df, selected_method)
 
-        # --- EVALUATION ---
-        evaluator = MetadataEvaluator(metadata, reference_truth)
-        report = evaluator.get_report()
-        report["Filename"] = file_name
-        all_results.append(report)
+        # C. SCORE EACH FIELD
+        geom_score = calculate_veregin_score(inferred['geom'], truth['geom'])
+        count_score = calculate_veregin_score(inferred['count'], truth['count'])
+        bbox_score = calculate_veregin_score(inferred['bbox'], truth['bbox'])
 
-    # --- 4. DISPLAY SUMMARY ---
-    results_df = pd.DataFrame(all_results).set_index("Filename")
+        # Calculate ISO 19115 Average
+        avg_score = (geom_score + count_score + bbox_score) / 3
 
-    st.subheader(f"Evaluation Summary: {inference_method}")
-    st.dataframe(results_df.style.highlight_max(axis=0, color='lightgreen'))
+        summary_data.append({
+            "Filename": file.name,
+            "Geometry Score": geom_score,
+            "Feature Count Score": count_score,
+            "BBox Score": bbox_score,
+            "ISO 19115 Weighted Total": round(avg_score, 2)
+        })
 
-    # Visualizing Method Performance
-    st.divider()
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("**Performance per Dataset (Veregin Score)**")
-        st.bar_chart(results_df["Final Score"])
+    # --- 4. DATA PRESENTATION ---
+    results_df = pd.DataFrame(summary_data)
 
-    with col2:
-        avg_total = results_df["Final Score"].mean()
-        st.metric("Batch Average Score", f"{avg_total:.2f} / 8.0")
-        st.info("High scores indicate metadata consistency with ISO 19115 standards.")
+    # Metrics Row
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Avg Quality Score", f"{results_df['ISO 19115 Weighted Total'].mean():.2f} / 8")
+    c2.metric("Files Processed", len(uploaded_files))
+    c3.metric("Method Reliability", "High" if results_df['ISO 19115 Weighted Total'].mean() > 6 else "Low")
 
-    # Export Report
-    csv = results_df.to_csv().encode('utf-8')
-    st.download_button("Download Full Evaluation Report", data=csv, file_name="metadata_eval_report.csv")
+    st.subheader("Detailed Evaluation Table")
+    st.dataframe(results_df, use_container_width=True)
+
+    # Visualization of performance across datasets
+    st.subheader("Performance Variance per Dataset")
+    st.line_chart(results_df.set_index("Filename")["ISO 19115 Weighted Total"])
 
 else:
-    st.info("Please upload one or more CSV files to begin the batch evaluation.")
+    st.warning("Please upload files to see the evaluation.")
