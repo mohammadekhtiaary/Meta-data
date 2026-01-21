@@ -233,7 +233,7 @@ if uploaded_file is not None:
             reference_data = parse_mif_reference(ref_file.read())
 
             st.divider()
-            st.header("⚖️ ISO Standard Evaluation (Veregin’s Matrix)")
+            st.header("Standard Evaluation (Veregin’s Matrix)")
             st.info("The evaluator uses Case-Insensitive normalization to match model output with the MIF standard.")
 
             # Map the fields we want to compare
@@ -270,7 +270,7 @@ if uploaded_file is not None:
         except Exception as e:
             st.error(f"Error reading MIF: {e}")
     else:
-        st.warning("⚠️ Upload a .mif file in the sidebar to perform the automated ISO evaluation.")
+        st.warning("⚠️ Upload a .mif file in the sidebar to perform the automated evaluation.")
 
     # --- 8. FINAL DOWNLOAD ---
     st.divider()
