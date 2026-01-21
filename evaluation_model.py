@@ -5,7 +5,7 @@ import re
 
 # --- 1. SET UP THE PAGE ---
 st.set_page_config(page_title="GeoMeta Portal & Evaluator", layout="wide")
-st.title("🛰️ Geospatial Metadata Generator & ISO Evaluator")
+st.title("🛰️ Geospatial Metadata Generator & Evaluator")
 
 
 # --- 2. HELPER FUNCTIONS ---
@@ -14,11 +14,19 @@ def infer_crs(df):
     """Detects if the coordinates likely belong to WGS84 (EPSG:4326)."""
     if 'LAT' in df.columns and 'LNG' in df.columns:
         # Check if values fall within standard geographic bounds
-        lat_check = df['LAT'].between(-90, 90).all()
-        lng_check = df['LNG'].between(-180, 180).all()
+        try:
+            lat_check = df['LAT'].between(-90, 90).all()
+            lng_check = df['LNG'].between(-180, 180).all()
 
-        if lat_check and lng_check:
-            return {"auth_name": "EPSG", "code": "4326", "name": "WGS 84"}
+            if lat_check and lng_check:
+                return {
+                    "auth_name": "EPSG",
+                    "code": "4326",
+                    "name": "WGS 84",
+                    "units": "Decimal Degrees"
+                }
+        except:
+            pass
     return {"name": "Unknown / Projected", "code": "Undefined"}
 
 
@@ -44,7 +52,7 @@ def parse_mif_reference(file_content):
     return ref
 
 
-# --- 3. CORRECTED INFERENCE LOGIC FUNCTIONS ---
+# --- 3. INFERENCE LOGIC FUNCTIONS ---
 
 def get_rule_based_metadata(df):
     """Method 1: Extracts metadata directly from file structure and schema."""
@@ -76,7 +84,6 @@ def get_statistical_metadata(df):
                 "max": float(df[col].max())
             })
 
-    # Ensure geometry_type is included for the evaluator
     return {
         "method": "Statistical Profiling",
         "geometry_type": "POINT" if ('LAT' in df.columns and 'LNG' in df.columns) else "Unknown",
@@ -108,18 +115,19 @@ def get_heuristic_metadata(df):
     }
 
 
-# --- 4. EVALUATION ENGINE ---
+# --- 4. EVALUATION ENGINE (Veregin's Matrix) ---
+
 def calculate_veregin_score(inferred_val, reference_val, field_name):
     """Scores a field based on Veregin's criteria (0-2) with normalization."""
     scores = {"Correctness": 0, "Completeness": 0, "Consistency": 0, "Granularity": 0}
 
     # 1. Completeness
-    if inferred_val is not None and str(inferred_val) not in ["Unknown", "[]", "None"]:
+    if inferred_val is not None and str(inferred_val) not in ["Unknown", "[]", "None", ""]:
         scores["Completeness"] = 2
     else:
         return scores
 
-    # 2. Correctness (Normalization)
+    # 2. Correctness (Normalization Fix)
     def normalize(v):
         if isinstance(v, list): v = v[0] if len(v) > 0 else ""
         return str(v).strip().upper().replace("MULTIPOLYGON", "POLYGON")
@@ -132,8 +140,10 @@ def calculate_veregin_score(inferred_val, reference_val, field_name):
     elif inf_norm in ref_norm or ref_norm in inf_norm:
         scores["Correctness"] = 1
 
-    # 3. Consistency & Granularity
+    # 3. Consistency (Internal Logic)
     scores["Consistency"] = 2
+
+    # 4. Granularity (Detail Level)
     if any(x in inf_norm for x in ['POINT', 'LINE', 'POLYGON']):
         scores["Granularity"] = 2
     else:
@@ -143,7 +153,7 @@ def calculate_veregin_score(inferred_val, reference_val, field_name):
     return scores
 
 
-# --- 5. SIDEBAR & UI ---
+# --- 5. SIDEBAR ---
 st.sidebar.header("Settings")
 inference_method = st.sidebar.selectbox(
     "Select Inference Method",
@@ -154,23 +164,24 @@ st.sidebar.divider()
 st.sidebar.header("Evaluation Reference")
 ref_file = st.sidebar.file_uploader("Upload Reference MIF File", type=['mif'])
 
+# --- 6. MAIN INTERFACE ---
 uploaded_file = st.file_uploader("Choose a CSV dataset file", type=['csv'])
 
 if uploaded_file is not None:
-    # Handle CSV reading
+    # Attempt to read with semicolon, fallback to comma
     try:
         df = pd.read_csv(uploaded_file, sep=';')
         if len(df.columns) <= 1:
             uploaded_file.seek(0)
             df = pd.read_csv(uploaded_file, sep=',')
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error loading file: {e}")
         st.stop()
 
     st.subheader("Data Preview")
     st.dataframe(df.head(5))
 
-    # Shared Metadata logic
+    # Execute selected method
     if inference_method == "Rule-Based (Schema)":
         metadata = get_rule_based_metadata(df)
     elif inference_method == "Statistical Profiling":
@@ -178,7 +189,7 @@ if uploaded_file is not None:
     else:
         metadata = get_heuristic_metadata(df)
 
-    # Global Additions
+    # Global shared metadata
     metadata["total_features"] = len(df)
     metadata["geographic_extent"] = {
         "min_x": float(df['LNG'].min()) if 'LNG' in df.columns else None,
@@ -187,35 +198,57 @@ if uploaded_file is not None:
         "max_y": float(df['LAT'].max()) if 'LAT' in df.columns else None,
     }
 
-    # Display
+    # Display Results
     c1, c2 = st.columns([2, 1])
     with c1:
-        st.subheader("Generated Metadata")
+        st.subheader(f"Generated Metadata ({inference_method})")
         st.json(metadata)
     with c2:
         st.subheader("Quick Stats")
         st.metric("Total Features", len(df))
         crs = metadata.get("spatial_reference", {})
-        st.info(f"**CRS:** {crs.get('name', 'Unknown')}")
+        st.info(f"**Detected CRS:** {crs.get('name', 'Unknown')}")
 
-    # Evaluation
+    # --- 7. EVALUATION LOGIC ---
     if ref_file is not None:
-        reference_data = parse_mif_reference(ref_file.read())
-        st.divider()
-        st.header("⚖️ ISO Standard Evaluation")
+        try:
+            reference_data = parse_mif_reference(ref_file.read())
+            st.divider()
+            st.header("⚖️ Evaluation (Veregin’s Matrix)")
 
-        comparison_map = {
-            "geometry_type": (metadata.get("geometry_type"), reference_data.get("geometry_type")),
-            "total_features": (metadata.get("total_features"), reference_data.get("total_features")),
-        }
+            comparison_map = {
+                "geometry_type": (metadata.get("geometry_type"), reference_data.get("geometry_type")),
+                "total_features": (metadata.get("total_features"), reference_data.get("total_features")),
+            }
 
-        eval_report = []
-        for field, values in comparison_map.items():
-            inf, ref = values
-            f_scores = calculate_veregin_score(inf, ref, field)
-            f_scores.update({"Field": field, "Inferred": str(inf), "Reference": str(ref)})
-            eval_report.append(f_scores)
+            eval_report = []
+            for field, values in comparison_map.items():
+                inf, ref = values
+                f_scores = calculate_veregin_score(inf, ref, field)
+                f_scores.update({
+                    "Field": field,
+                    "Inferred": str(inf),
+                    "Reference (MIF)": str(ref)
+                })
+                eval_report.append(f_scores)
 
-        st.table(pd.DataFrame(eval_report).set_index("Field"))
+            eval_df = pd.DataFrame(eval_report).set_index("Field")
+            st.table(eval_df)
 
-    st.download_button("Download JSON", json.dumps(metadata, indent=4), "metadata.json")
+            total_points = eval_df["Total"].sum()
+            max_points = len(eval_report) * 8
+            st.success(
+                f"**Overall Performance Score:** {total_points}/{max_points} ({(total_points / max_points) * 100:.1f}%)")
+
+        except Exception as e:
+            st.error(f"Error reading MIF: {e}")
+    else:
+        st.warning("⚠️ Upload a .mif file in the sidebar to perform evaluation.")
+
+    # Download Button
+    st.download_button(
+        label="Download Metadata JSON",
+        data=json.dumps(metadata, indent=4),
+        file_name="metadata.json",
+        mime="application/json"
+    )
