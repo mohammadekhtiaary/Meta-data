@@ -117,35 +117,93 @@ def get_heuristic_metadata(df):
 
 # --- 4. EVALUATION ENGINE ---
 
+# def calculate_veregin_score(inferred_val, reference_val, field_name):
+#     scores = {
+#         "Correctness": 0,
+#         "Completeness": 0,
+#         "Consistency": 0,
+#         "Granularity": 0
+#     }
+#
+#     # 1. Completeness
+#     if inferred_val and str(inferred_val) not in ["Unknown", "[]", "None"]:
+#         scores["Completeness"] = 2
+#     else:
+#         return scores
+#
+#     # 2. Normalization
+#     def normalize(v):
+#         if isinstance(v, list):
+#             v = v[0] if len(v) > 0 else ""
+#         return str(v).strip().upper()
+#
+#     inf_norm = normalize(inferred_val)
+#     ref_norm = normalize(reference_val)
+#
+#     # 3. Correctness
+#     if inf_norm == ref_norm and inf_norm != "":
+#         scores["Correctness"] = 2
+#     elif inf_norm in ref_norm or ref_norm in inf_norm:
+#         scores["Correctness"] = 1
+#
+#     # 4. Consistency
+#     scores["Consistency"] = 2
+#
+#     # 5. Granularity (Binary)
+#     if (
+#         scores["Correctness"] == 2
+#         and inf_norm not in ["GEOMETRY", "UNKNOWN"]
+#         and "ESTIMATED" not in inf_norm
+#     ):
+#         scores["Granularity"] = 1
+#     else:
+#         scores["Granularity"] = 0
+#
+#     scores["Total"] = sum(scores.values())
+#     return scores
 def calculate_veregin_score(inferred_val, reference_val, field_name):
-    """Scores based on Veregin's criteria (0-2)."""
-    scores = {"Correctness": 0, "Completeness": 0, "Consistency": 0, "Granularity": 0}
+    scores = {
+        "Correctness": 0,
+        "Completeness": 0,
+        "Consistency": 0,
+        "Granularity": 0
+    }
 
-    # 1. Completeness
+    # --- 1. Completeness ---
     if inferred_val and str(inferred_val) not in ["Unknown", "[]", "None"]:
         scores["Completeness"] = 2
     else:
+
         return scores
 
-    # 2. Correctness (Normalization)
+    # --- 2. Normalization ---
     def normalize(v):
-        if isinstance(v, list): v = v[0] if len(v) > 0 else ""
-        return str(v).strip().upper().replace("MULTIPOLYGON", "POLYGON")
+        if isinstance(v, list):
+            v = v[0] if len(v) > 0 else ""
+        return str(v).strip().upper()
 
     inf_norm = normalize(inferred_val)
     ref_norm = normalize(reference_val)
 
+    # --- 3. Correctness ---
     if inf_norm == ref_norm and inf_norm != "":
         scores["Correctness"] = 2
     elif inf_norm in ref_norm or ref_norm in inf_norm:
         scores["Correctness"] = 1
+    else:
+        scores["Correctness"] = 0
 
+    # --- 4. Consistency ---
     scores["Consistency"] = 2
-    scores["Granularity"] = 2 if any(x in inf_norm for x in ['POINT', 'LINE', 'POLYGON']) else 1
+
+    # --- 5. Granularity ( Correctness و Completeness) ---
+    if scores["Correctness"] == 2 and scores["Completeness"] == 2:
+        scores["Granularity"] = 1
+    else:
+        scores["Granularity"] = 0
+
     scores["Total"] = sum(scores.values())
     return scores
-
-
 # --- 5. APP INTERFACE ---
 
 st.sidebar.header("Settings")
